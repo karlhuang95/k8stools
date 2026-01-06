@@ -91,6 +91,60 @@ cost:
 
 ---
 
+# 📊 resourceAdvisor - Kubernetes 服务资源顾问工具
+
+**数据来源：Traefik + Prometheus 指标**
+
+| 指标             | 查询方式                         |
+|------------------|--------------------------------------|
+|加权 RPS（每秒请求数）| sum by(method)(rate(traefik_service_requests_total{namespace="traefik", exported_service="<服务名>"}[1m])) × 方法权重|
+|P95 延迟（ms）| histogram_quantile(0.95, sum by(le)(rate(traefik_service_request_duration_seconds_bucket{namespace="traefik", exported_service="<服务名>"}[5m]))) * 1000|
+|请求/限制 CPU| 固定值或根据 RPS 计算（m）|
+|请求/限制内存|固定值或根据 RPS 计算（Mi）|
+
+**决策逻辑**
+
+| 决策类型             | 条件说明                         |
+|------------------|--------------------------------------|
+|SCALE_OUT|加权 RPS 或 P95 延迟偏高，需要扩容 Pod|
+|DOWNSIZE_SAFE|流量低且 CPU/内存长期低利用率，可安全缩容|
+|NO_TRAFFIC|未观测到业务流量，无需操作|
+|KEEP|指标正常，保持现有副本数|
+
+**输出字段说明（中文表头）**
+
+| 字段             | 含义                         |
+|------------------|--------------------------------------|
+|命名空间|	Kubernetes Namespace|
+|服务	|exported_service 名称|
+|RPS（加权）|	method 加权后的每秒请求数|
+|P95延迟（ms）|	请求延迟的 95 百分位数|
+|请求CPU（m）|	Pod 请求 CPU|
+|限制CPU（m）|	Pod 限制 CPU|
+|请求内存（Mi）|	Pod 请求内存|
+|限制内存（Mi）|	Pod 限制内存|
+|最小副本数|	最小副本数（minReplicas）|
+|推荐副本数|	根据指标计算的推荐副本数|
+|决策	|SCALE_OUT / DOWNSIZE_SAFE / NO_TRAFFIC / KEEP|
+|风险等级|	LOW / MEDIUM / HIGH|
+|置信度	|LOW / MEDIUM / HIGH|
+|原因	|决策依据|
+|指标窗口|	用于统计 RPS / 延迟的时间窗口|
+|生成时间|	CSV 生成时间|
+
+**方法加权说明**
+
+| 方法             | 权重                        |
+|------------------|-------------------------------------|
+|GET	|1|
+|POST	|2|
+|DELETE|2|
+
+使用说明
+1.	配置 Prometheus 地址与命名空间列表。
+2.	调用 ResourceAdvisor 接口生成 CSV 文件。
+3.	CSV 文件可用于 Pod 资源调整或 HPA 决策参考。
+
 # 🔍 runtimeInspect - 容器行为采集工具
 
 **功能说明：**

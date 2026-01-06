@@ -1,9 +1,8 @@
 kubeconfig: /root/.kube/config
-namespace: # 名称空间
+namespace:
   - {namespace}-prod
 prometheus: http://prometheus.example.com
 
 cost:
   cpuPrice: 4000   # 单台机器价格（单位元）
   totalCpu: 16     # 单台机器 CPU 核数
-
