@@ -15,7 +15,7 @@ import (
 	"k8stools/pkg/config"
 )
 
-func GetDeyloymentCpu(c *config.Config) {
+func GetDeploymentCpu(c *config.Config) {
 	cfg, err := clientcmd.BuildConfigFromFlags("", c.KubeConfig)
 	if err != nil {
 		panic(err)

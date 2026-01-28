@@ -14,13 +14,28 @@ import (
 	"github.com/prometheus/common/model"
 )
 
-func GetTrend(c *config.Config) {
+func GetTrend(c *config.Config) error {
+	if err := ValidateConfig(c); err != nil {
+		return fmt.Errorf("配置验证失败: %w", err)
+	}
+	
 	err := AnalyzeResourceTrends(c.Prometheus, c.NameSpace)
 	if err != nil {
-		fmt.Printf("❌ 运行失败: %v\n", err)
-	} else {
-		fmt.Println("✅ 资源趋势已保存到 resource_trend.csv")
+		return fmt.Errorf("趋势分析失败: %w", err)
 	}
+	
+	fmt.Println("✅ 资源趋势已保存到 resource_trend.csv")
+	return nil
+}
+
+func ValidateConfig(c *config.Config) error {
+	if c.Prometheus == "" {
+		return fmt.Errorf("Prometheus地址不能为空")
+	}
+	if len(c.NameSpace) == 0 {
+		return fmt.Errorf("命名空间列表不能为空")
+	}
+	return nil
 }
 
 func AnalyzeResourceTrends(promAddress string, namespaces []string) error {
@@ -99,7 +114,7 @@ func AnalyzeResourceTrends(promAddress string, namespaces []string) error {
 
 	// 写入表头
 	head := []string{
-		"Namespace", "Deployment", "Container", "趋势标签",
+		"Namespace", "Deployment", "Container", "趋势标签", "趋势斜率",
 		"推荐CPU Requests(m)", "推荐CPU Limits(m)", "推荐Memory Requests(Mi)", "推荐Memory Limits(Mi)",
 		"日期", "平均CPU(m)", "最大CPU(m)", "平均内存(Mi)", "最大内存(Mi)",
 	}
@@ -121,9 +136,20 @@ func AnalyzeResourceTrends(promAddress string, namespaces []string) error {
 		// 获取其他信息
 		ns := key.namespace
 		deploy := extractDeployment(key.pod)
-		trend := analyzeTrend(cpuSeries) // 趋势标签
+		trend, trendSlope := analyzeTrend(cpuSeries) // 趋势标签和斜率
+		
+		// 基于趋势调整推荐值
+		if trend == "上升趋势" {
+			recommendCPUReq = int(float64(recommendCPUReq) * 1.1)
+			recommendMemReq = int(float64(recommendMemReq) * 1.1)
+		} else if trend == "下降趋势" {
+			recommendCPUReq = int(float64(recommendCPUReq) * 0.9)
+			recommendMemReq = int(float64(recommendMemReq) * 0.9)
+		}
+		
 		row := []string{
 			ns, deploy, key.container, trend,
+			fmt.Sprintf("%.2f", trendSlope),
 			fmt.Sprintf("%d", recommendCPUReq), fmt.Sprintf("%d", recommendCPULim),
 			fmt.Sprintf("%d", recommendMemReq), fmt.Sprintf("%d", recommendMemLim),
 			time.Now().Format("2006-01-02"),
@@ -186,18 +212,39 @@ func calcAvgMax(data []float64) (avg, max float64) {
 }
 
 // 分析趋势
-func analyzeTrend(data []float64) string {
-	if len(data) < 2 {
-		return "无趋势"
+func analyzeTrend(data []float64) (string, float64) {
+	if len(data) < 10 {
+		return "数据不足", 0
 	}
-	delta := data[len(data)-1] - data[0]
-	if delta > 50 {
-		return "上升"
-	} else if delta < -50 {
-		return "下降"
-	} else {
-		return "稳定"
+	
+	// 使用线性回归分析趋势
+	var sumX, sumY, sumXY, sumXX float64
+	for i, v := range data {
+		x := float64(i)
+		sumX += x
+		sumY += v
+		sumXY += x * v
+		sumXX += x * x
 	}
+	
+	n := float64(len(data))
+	slope := (n*sumXY - sumX*sumY) / (n*sumXX - sumX*sumX)
+	
+	// 计算置信度
+	meanY := sumY / n
+	var sumSqDiff float64
+	for _, v := range data {
+		sumSqDiff += (v - meanY) * (v - meanY)
+	}
+	variance := sumSqDiff / n
+	
+	// 判断趋势
+	if slope > 0.1 && variance > 10 {
+		return "上升趋势", slope
+	} else if slope < -0.1 && variance > 10 {
+		return "下降趋势", slope
+	}
+	return "稳定", slope
 }
 
 // 提取 Deployment 名称

@@ -1,239 +1,368 @@
-# 🧰K8stools 使用说明文档
+# K8stools
 
-版本：v1.0  
-更新时间：2025-05-08  
-作者：karl
+[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-k8stools-purple)](https://github.com/karl/k8stools)
 
-# 📌简介
+> Kubernetes 日常运维辅助工具集 - 数据驱动的资源优化平台
 
-K8stools 是一个 Kubernetes 日常运维辅助工具集，旨在提升运维效率，辅助平台治理与资源优化。功能涵盖资源分析、趋势评估、异常检测、行为采集、成本估算等常见场景，适用于 DevOps、SRE、平台工程团队。
+---
 
-# 🎯功能模块
+## 📋 目录
 
-| 模块名称 | 功能说明 |
+- [简介](#简介)
+- [核心特性](#核心特性)
+- [功能模块](#功能模块)
+- [快速开始](#快速开始)
+- [详细文档](#详细文档)
+- [架构图](#架构图)
+- [贡献指南](#贡献指南)
+- [许可证](#许可证)
+
+---
+
+## 简介
+
+**K8stools** 是一个专为 Kubernetes 运维设计的智能化工具集，通过整合 Metrics Server、Prometheus、Traefik 等监控数据源，提供数据驱动的资源分析与优化建议。
+
+**适用场景：**
+- 🔍 **资源分析** - 深入了解集群资源使用状况
+- 📈 **趋势预测** - 基于历史数据的资源增长预测
+- 💰 **成本优化** - 精确计算资源成本，优化预算
+- 🚀 **性能调优** - 基于流量指标的服务配置建议
+- 🛡️ **运行时监控** - 非入侵式容器行为采集
+
+---
+
+## 核心特性
+
+| 特性 | 说明 |
 |------|------|
-|costEstimator|成本估算|
-|cpu|获取k8s的cpu使用情况|
-|paradise|k8s理想情况分配|
-|poderrors|异常检查|
-|runtimeInspect|采集运行中的 Pod 容器行为信息（进程、端口、环境变量）|
-|trend|基于 Prometheus 的资源使用趋势分析与建议|
+| 📊 **数据驱动** | 基于 Metrics Server、Prometheus、Traefik 等真实指标 |
+| 🧠 **智能分析** | 线性回归、多级决策模型等算法提供精准建议 |
+| 🔒 **非入侵式** | 只读采集数据，不影响生产环境运行 |
+| 🎯 **模块化设计** | 各模块独立运行，易于扩展和集成 |
+| 📝 **多格式输出** | CSV 格式输出，便于进一步处理和分析 |
 
-# 📄 配置文件说明（config.yaml）
+---
+
+## 功能模块
+
+### 📊 CPU 使用情况统计
+
+统计 Deployment 级别的 CPU 使用情况，区分主容器和 Sidecar 容器，用于资源评估和优化分析。
+
+**数据来源：** Kubernetes Metrics Server + Kubernetes API
+
+**输出信息：**
+- CPU 实际使用量（主容器 vs Sidecar）
+- CPU Requests/Limits 配置
+- HPA 副本数范围
+
+```bash
+./k8stools cpu -f config.yaml
+```
+
+---
+
+### 🔍 容器运行时行为采集
+
+非入侵式采集运行中 Pod 容器的详细运行信息，用于故障排查和运行时分析。
+
+**采集内容：**
+- 📋 进程列表 (`ps aux`)
+- 🔌 监听端口 (`ss -tulnp`)
+- 🌍 环境变量 (`printenv`)
+
+**安全机制：**
+- ✅ 命令白名单（只允许预定义的安全命令）
+- ⚡ 并发控制（最多 5 个容器同时执行）
+- ⏱️ 超时保护（30 秒超时）
+
+```bash
+./k8stools runtimeInspect -f config.yaml
+```
+
+---
+
+### 📈 资源趋势分析
+
+基于 Prometheus 历史数据（默认 7 天）分析容器资源使用趋势，并给出资源配置建议。
+
+**核心算法：**
+- **线性回归** - 分析资源使用趋势（上升/下降/稳定）
+- **趋势系数调整** - 上升趋势 ×1.1，下降趋势 ×0.9
+- **推荐值计算** - CPU Requests = ceil(平均 CPU × 1.2 × 系数)
+
+**查询指标：**
+- CPU 使用率：`sum(rate(container_cpu_usage_seconds_total{...}[5m]))`
+- 内存使用量：`avg(container_memory_usage_bytes{...})`
+
+```bash
+./k8stools trend -f config.yaml
+```
+
+---
+
+### 🎯 服务资源顾问
+
+基于 Traefik 流量指标分析服务负载，提供 Pod 资源和副本数配置建议，支持 HPA 决策参考。
+
+**核心算法：**
+
+**1. 加权 RPS 计算**
+```
+总加权 RPS = Σ(各方法 RPS × 方法权重)
+方法权重：GET=1, POST/PUT/PATCH/DELETE=2
+```
+
+**2. 资源需求计算**
+```
+CPU Request  = ceil(100 + RPS × 0.1 × 系数)
+CPU Limit    = ceil(CPU Request × 系数)
+Memory Req   = ceil(128 + RPS × 2 × 系数)
+Memory Limit = ceil(Memory Req × 系数)
+```
+
+**3. 五级决策模型**
+
+| 场景 | 条件 | 推荐副本数 | 决策 | 风险 |
+|------|------|-----------|------|------|
+| 无流量 | RPS = 0 | minReplicas | NO_TRAFFIC | LOW |
+| 高负载 | 延迟>1000ms 或 RPS>200 | ceil(RPS/15×系数) | SCALE_OUT | HIGH |
+| 中等负载 | 延迟>500ms 或 RPS>100 | ceil(RPS/20×系数) | SCALE_OUT | MEDIUM |
+| 低负载 | RPS<10 且 延迟<100ms | max(1, ceil(minReplicas×0.8)) | DOWNSIZE_SAFE | LOW |
+| 正常 | 其他情况 | max(minReplicas, ceil(RPS/25×系数)) | KEEP | LOW |
+
+```bash
+./k8stools resourceAdvisor -f config.yaml
+```
+
+---
+
+### 💰 成本估算
+
+根据容器资源请求（CPU Requests）计算每月成本，支持成本分析和资源优化决策。
+
+**计算模型：**
+```
+每毫核价格 = 单价 / (CPU 核数 × 1000)
+容器月费用 = CPU Request (m) × 每毫核价格 × 24 × 30
+```
+
+**示例：**
+- 机器单价 = 4000 元/月
+- CPU 核数 = 16 核
+- 容器 CPU Request = 500m
+- **月费用** = 0.25 × 500 × 24 × 30 = **90,000 元**
+
+```bash
+./k8stools costEstimator -f config.yaml
+```
+
+---
+
+## 快速开始
+
+### 1. 配置文件
+
+创建 `config.yaml`：
 
 ```yaml
 kubeconfig: /root/.kube/config
+
 namespace:
-  - {namespace}-prod
-prometheus: http://prom.example.net
+  - zhike-prod
 
+prometheus: https://prom.zhikecn.com/
+
+# 成本估算配置
 cost:
-  cpuPrice: 4000   # 单台机器价格（单位元）
+  cpuPrice: 4000   # 单台机器价格（元/月）
   totalCpu: 16     # 单台机器 CPU 核数
+
+# 资源建议配置
+resourceAdvisor:
+  cpuRequestFactor: 1.0      # CPU 请求系数
+  cpuLimitFactor: 2.0       # CPU 限制系数
+  memRequestFactor: 1.0     # 内存请求系数
+  memLimitFactor: 2.0       # 内存限制系数
+  podRedundancyFactor: 1.5  # 副本冗余系数
 ```
 
-# 🧠 各子工具设计逻辑
-
----
-
-# 📊 paradise - 理想资源建议工具
-
-**CPU 建议规则：**
-
-| 类型     | 设计逻辑                                                             |
-|----------|----------------------------------------------------------------------|
-| Requests | 当前使用量的 50%~80%，保证调度时有资源可用                         |
-| Limits   | 当前使用量的 100%~150%，防止异常飙高占满节点                        |
-| 特殊处理 | 使用低于 50m 的容器 → 默认给 50m，避免调度失败；高于 1000m 提示设置上限 |
-
-**内存建议规则：**
-
-| 类型     | 设计逻辑                                                             |
-|----------|----------------------------------------------------------------------|
-| Requests | 当前使用量的 70%~100%，确保稳定调度                                 |
-| Limits   | 当前使用量的 150%~200%，保留 buffer 防止 OOM                        |
-| 特殊处理 | 对 sidecar / agent 等轻量容器，给最小起点值如 64Mi                  |
-
----
-
-# 📈 trend - 资源趋势分析工具
-
-**数据来源：Prometheus 查询**
-
-| 指标 | 查询方式 |
-|------|----------|
-| 平均 CPU 使用量 | `avg_over_time(container_cpu_usage_seconds_total[1w])`（单位：m） |
-| 最大 CPU 使用量 | `max_over_time(container_cpu_usage_seconds_total[1w])`（单位：m） |
-| 平均/最大内存使用量 | 类似用 `container_memory_usage_bytes` 查询，并换算成 MiB |
-
-**推荐策略（保守 & 稳健）**
-
-| 类型             | 推荐计算公式                         |
-|------------------|--------------------------------------|
-| CPU Requests     | `ceil(平均 CPU 使用量 × 1.2)`        |
-| CPU Limits       | `ceil(最大 CPU 使用量 × 1.5)`        |
-| 内存 Requests    | `ceil(平均内存使用量 × 1.2)`         |
-| 内存 Limits      | `ceil(最大内存使用量 × 1.5)`         |
-
----
-
-# 🚨 poderrors - 异常 Pod 检查工具
-
-**功能说明：**
-
-- 遍历所有或指定命名空间下的 Pod
-- 检查所有处于异常状态的容器（如 CrashLoop、ImagePullBackOff、OOMKilled 等）
-- 输出字段：
-
-| Namespace | Pod     | Container | Reason            | Message                                | Restart Count | Age |
-|-----------|---------|-----------|-------------------|----------------------------------------|---------------|-----|
-| default   | api-xxx | app       | CrashLoopBackOff  | Back-off restarting failed container   | 5             | 3m  |
-
----
-
-# 📊 resourceAdvisor - Kubernetes 服务资源顾问工具
-
-**数据来源：Traefik + Prometheus 指标**
-
-| 指标             | 查询方式                         |
-|------------------|--------------------------------------|
-|加权 RPS（每秒请求数）| sum by(method)(rate(traefik_service_requests_total{namespace="traefik", exported_service="<服务名>"}[1m])) × 方法权重|
-|P95 延迟（ms）| histogram_quantile(0.95, sum by(le)(rate(traefik_service_request_duration_seconds_bucket{namespace="traefik", exported_service="<服务名>"}[5m]))) * 1000|
-|请求/限制 CPU| 固定值或根据 RPS 计算（m）|
-|请求/限制内存|固定值或根据 RPS 计算（Mi）|
-
-**决策逻辑**
-
-| 决策类型             | 条件说明                         |
-|------------------|--------------------------------------|
-|SCALE_OUT|加权 RPS 或 P95 延迟偏高，需要扩容 Pod|
-|DOWNSIZE_SAFE|流量低且 CPU/内存长期低利用率，可安全缩容|
-|NO_TRAFFIC|未观测到业务流量，无需操作|
-|KEEP|指标正常，保持现有副本数|
-
-**输出字段说明（中文表头）**
-
-| 字段             | 含义                         |
-|------------------|--------------------------------------|
-|命名空间|	Kubernetes Namespace|
-|服务	|exported_service 名称|
-|RPS（加权）|	method 加权后的每秒请求数|
-|P95延迟（ms）|	请求延迟的 95 百分位数|
-|请求CPU（m）|	Pod 请求 CPU|
-|限制CPU（m）|	Pod 限制 CPU|
-|请求内存（Mi）|	Pod 请求内存|
-|限制内存（Mi）|	Pod 限制内存|
-|最小副本数|	最小副本数（minReplicas）|
-|推荐副本数|	根据指标计算的推荐副本数|
-|决策	|SCALE_OUT / DOWNSIZE_SAFE / NO_TRAFFIC / KEEP|
-|风险等级|	LOW / MEDIUM / HIGH|
-|置信度	|LOW / MEDIUM / HIGH|
-|原因	|决策依据|
-|指标窗口|	用于统计 RPS / 延迟的时间窗口|
-|生成时间|	CSV 生成时间|
-
-**方法加权说明**
-
-| 方法             | 权重                        |
-|------------------|-------------------------------------|
-|GET	|1|
-|POST	|2|
-|DELETE|2|
-
-使用说明
-1.	配置 Prometheus 地址与命名空间列表。
-2.	调用 ResourceAdvisor 接口生成 CSV 文件。
-3.	CSV 文件可用于 Pod 资源调整或 HPA 决策参考。
-
-# 🔍 runtimeInspect - 容器行为采集工具
-
-**功能说明：**
-
-- 采集运行中 Pod 的详细信息，包括：
-  - 容器内进程列表
-  - 监听端口信息
-  - 环境变量
-
-**使用场景：**
-- 排查线上故障时快速查看容器内部运行情况
-- 无需进入容器即可采集运行行为（非入侵式）
-
----
-
-# 💰 costEstimator - 成本估算工具
-
-**计算模型：**
-
-- 基于你提供的每台机器：
-  - CPU 核数（如：16）
-  - 单价（如：4000元）
-
-**计算逻辑：**
-
-| 步骤             | 说明                                                             |
-|------------------|------------------------------------------------------------------|
-| 每核价格         | `单价 / 总 CPU 数`                                               |
-| 容器请求费用     | `CPU Request (m) × 每毫核价格`                                   |
-| 每月总费用       | `容器费用 × 24 × 30`（按 30 天、全天运行估算）                  |
-
-**输出字段：**
-
-| Namespace | Pod   | Container | CPU Request (m) | CPU Cost (元) | Total Cost (元/月) |
-|-----------|-------|-----------|-----------------|----------------|---------------------|
-
----
-
-# 📦 示例命令
+### 2. 编译安装
 
 ```bash
-k8stools paradise        -f config.yaml   # 理想资源建议
-k8stools trend           -f config.yaml   # 资源趋势分析
-k8stools poderrors       -f config.yaml   # 异常 Pod 检查
-k8stools runtimeInspect  -f config.yaml   # 容器运行时行为采集
-k8stools costEstimator   -f config.yaml   # 成本估算
+# 使用 Makefile 编译（推荐）
+make build
+
+# 或直接使用 Go 编译
+go build -o k8stools main.go
+
+# 查看所有可用命令
+./k8stools --help
 ```
+
+### 3. 运行模块
 
 ```bash
-# 计算资源使用情况的理想配置建议
-k8stools paradise -f config.yaml
+# CPU 使用情况统计
+./k8stools cpu -f config.yaml
 
-# 基于 Prometheus 历史数据的趋势分析
-k8stools trend -f config.yaml
+# 容器运行时行为采集
+./k8stools runtimeInspect -f config.yaml
 
-# 检查所有命名空间下异常状态的 Pod
-k8stools poderrors -f config.yaml
+# 资源趋势分析
+./k8stools trend -f config.yaml
 
-# 查看容器运行时信息（进程、端口、环境变量）
-k8stools runtimeInspect -f config.yaml
+# 服务资源顾问
+./k8stools resourceAdvisor -f config.yaml
 
-# 根据配置中机器单价和总 CPU 数进行成本估算
-k8stools costEstimator -f config.yaml
-```
----
-
-# 📁 建议输出目录结构
-
-统一将输出放到 `output/` 目录，并添加时间戳，便于追溯与比较：
-
-```
-output/
-├── cpu_info_2025-04-21.csv
-├── cost_estimate_2025-04-21.csv
-└── resource_trend_2025-04-21.csv
+# 成本估算
+./k8stools costEstimator -f config.yaml
 ```
 
 ---
 
-# ✨ TODO（建议）
+## 详细文档
 
-- [ ] 增加 `diagnose` 一键巡检工具
-- [ ] 支持 JSON/table 等输出格式
+### 输出文件说明
+
+各模块会生成带时间戳的 CSV 文件，便于追溯和对比：
+
+| 文件 | 说明 | 生成命令 |
+|------|------|----------|
+| `deployment_cpu_info.csv` | CPU 使用情况统计 | `cpu` |
+| `runtime_snapshot_*.csv` | 容器运行时快照 | `runtimeInspect` |
+| `resource_trend.csv` | 资源趋势分析 | `trend` |
+| `resource_advice_*.csv` | 服务资源建议 | `resourceAdvisor` |
+| `cost_estimate_*.csv` | 成本估算 | `costEstimator` |
+
+### 算法详解
+
+#### 📈 线性回归趋势分析
+
+**斜率计算公式：**
+```
+slope = (n·Σxy - Σx·Σy) / (n·Σx² - (Σx)²)
+```
+
+**趋势判断规则：**
+```
+- 斜率 > 0.1 且 方差 > 10  → 上升趋势
+- 斜率 < -0.1 且 方差 > 10 → 下降趋势
+- 其他                     → 稳定
+```
+
+#### 🎯 五级决策模型
+
+根据 RPS 和 P95 延迟的组合判断服务状态，动态调整副本数：
+- **NO_TRAFFIC** - 无流量，保持最小副本
+- **SCALE_OUT** - 高负载，自动扩容
+- **DOWNSIZE_SAFE** - 低负载，安全缩容
+- **KEEP** - 正常负载，保持配置
+
 ---
 
-# 📬 联系与反馈
+## 架构图
 
-如有建议或需求，欢迎反馈或提交 PR，一起打磨出更适合生产的 K8s 工具链！
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        K8stools                              │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │   cpu 模块    │  │runtimeInspect │  │  trend 模块   │      │
+│  │              │  │    模块       │  │              │      │
+│  │ - Metrics    │  │ - 进程采集    │  │ - 趋势分析    │      │
+│  │   Server     │  │ - 端口扫描    │  │ - 线性回归    │      │
+│  │ - HPA 配置   │  │ - 环境变量    │  │ - 推荐计算    │      │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │
+│         │                 │                  │              │
+│  ┌──────┴───────┐  ┌──────┴───────┐  ┌──────┴───────┐      │
+│  │resourceAdvisor│  │ costEstimator │  │   数据采集层   │      │
+│  │              │  │              │  │              │      │
+│  │ - RPS 计算   │  │ - 成本估算    │  │ - K8s API    │      │
+│  │ - P95 延迟   │  │ - 预算分析    │  │ - Prometheus  │      │
+│  │ - 决策模型   │  │ - 成本优化    │  │ - Traefik     │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│                                                               │
+└─────────────────────────────────────────────────────────────┘
 
+数据源：
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│ Metrics     │  │ Prometheus  │  │ Traefik     │
+│ Server      │  │             │  │             │
+│ - CPU/Mem   │  │ - 历史数据   │  │ - 流量指标   │
+│ - 实时指标  │  │ - 趋势分析   │  │ - 延迟数据   │
+└─────────────┘  └─────────────┘  └─────────────┘
+```
 
+---
 
+## 贡献指南
 
+欢迎贡献代码、报告问题或提出改进建议！
+
+### 开发环境设置
+
+```bash
+# 克隆仓库
+git clone https://github.com/karl/k8stools.git
+cd k8stools
+
+# 安装依赖
+go mod download
+
+# 运行测试
+go test ./...
+
+# 代码格式化
+go fmt ./...
+```
+
+### 提交 Pull Request
+
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 开启 Pull Request
+
+---
+
+## TODO
+
+- [ ] 🚨 增加 `poderrors` 异常 Pod 检查模块
+- [ ] 📊 增加 `paradise` 理想资源建议模块
+- [ ] 📈 支持 JSON/Table 等多种输出格式
+- [ ] 🎨 增加图表可视化输出
+- [ ] 🌐 支持 Web UI 界面
+- [ ] 🔔 增加告警通知功能
+- [ ] 📚 增加完整的使用文档和示例
+
+---
+
+## 许可证
+
+本项目采用 Apache License 2.0 开源许可证。详见 [LICENSE](LICENSE) 文件。
+
+---
+
+## 联系方式
+
+- **作者**: Karl
+- **Email**: karlhuang93@gmail.com
+- **GitHub**: https://github.com/karl/k8stools
+
+如有任何问题或建议，欢迎提交 Issue 或 Pull Request！
+
+---
+
+<div align="center">
+
+**⭐ 如果这个项目对你有帮助，请给一个 Star！**
+
+Made with ❤️ by K8stools Team
+
+</div>

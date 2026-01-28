@@ -70,10 +70,18 @@ type AdviceRecord struct {
 =====================
 */
 
-func ResourceAdvisor(c *config.Config) {
-	file, err := os.Create("resource_advice.csv")
+func ResourceAdvisor(c *config.Config) error {
+	// 验证配置
+	if err := validateResourceAdvisorConfig(c); err != nil {
+		return fmt.Errorf("配置验证失败: %w", err)
+	}
+
+	// 创建带时间戳的输出文件
+	timestamp := time.Now().Format("2006-01-02_150405")
+	filename := fmt.Sprintf("resource_advice_%s.csv", timestamp)
+	file, err := os.Create(filename)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("创建输出文件失败: %w", err)
 	}
 	defer file.Close()
 
@@ -100,8 +108,17 @@ func ResourceAdvisor(c *config.Config) {
 		"生成时间",
 	})
 
+	totalRecords := 0
+	successfulRecords := 0
+
 	for _, ns := range c.NameSpace {
-		records := runAdvisorForNamespace(c, ns)
+		records, err := runAdvisorForNamespace(c, ns)
+		if err != nil {
+			fmt.Printf("❌ 处理命名空间 %s 失败: %v\n", ns, err)
+			continue
+		}
+		
+		totalRecords += len(records)
 		for _, r := range records {
 			writer.Write([]string{
 				r.Namespace,
@@ -121,10 +138,23 @@ func ResourceAdvisor(c *config.Config) {
 				r.MetricsWindow,
 				r.GeneratedAt,
 			})
+			successfulRecords++
 		}
 	}
 
-	fmt.Println("✅ resourceAdvisor（日级）分析完成，已生成 resource_advice.csv")
+	fmt.Printf("✅ resourceAdvisor分析完成，已生成 %s (成功处理 %d/%d 条记录)\n", 
+		filename, successfulRecords, totalRecords)
+	return nil
+}
+
+func validateResourceAdvisorConfig(c *config.Config) error {
+	if c.Prometheus == "" {
+		return fmt.Errorf("Prometheus地址不能为空")
+	}
+	if len(c.NameSpace) == 0 {
+		return fmt.Errorf("命名空间列表不能为空")
+	}
+	return nil
 }
 
 /*
@@ -133,19 +163,31 @@ Namespace 维度
 =====================
 */
 
-func runAdvisorForNamespace(c *config.Config, ns string) []AdviceRecord {
+func runAdvisorForNamespace(c *config.Config, ns string) ([]AdviceRecord, error) {
 	var records []AdviceRecord
 
-	services := getExportedServices(c.Prometheus)
+	services, err := getExportedServices(c.Prometheus)
+	if err != nil {
+		return nil, fmt.Errorf("获取服务列表失败: %w", err)
+	}
+	
+	if len(services) == 0 {
+		return nil, fmt.Errorf("命名空间 %s 中没有发现服务", ns)
+	}
+
 	for _, es := range services {
 		if !strings.HasSuffix(es, "@kubernetescrd") {
 			continue
 		}
-		r := runAdvisorForService(c, ns, es)
+		r, err := runAdvisorForService(c, ns, es)
+		if err != nil {
+			fmt.Printf("⚠️ 处理服务 %s 失败: %v\n", es, err)
+			continue
+		}
 		records = append(records, r)
 	}
 
-	return records
+	return records, nil
 }
 
 /*
@@ -154,53 +196,105 @@ Service 维度
 =====================
 */
 
-func runAdvisorForService(c *config.Config, ns, es string) AdviceRecord {
-	rps := queryDailyWeightedRPS(c.Prometheus, es)
-	lat := queryDailyP95Latency(c.Prometheus, es)
+func runAdvisorForService(c *config.Config, ns, es string) (AdviceRecord, error) {
+	rps, err := queryDailyWeightedRPS(c.Prometheus, es)
+	if err != nil {
+		return AdviceRecord{}, fmt.Errorf("查询RPS失败: %w", err)
+	}
+	
+	lat, err := queryDailyP95Latency(c.Prometheus, es)
+	if err != nil {
+		return AdviceRecord{}, fmt.Errorf("查询延迟失败: %w", err)
+	}
+
+	// 基于配置的系数计算资源需求
+	cpuReq := calculateCPURequest(rps, c.ResourceAdvisor.CPURequestFactor)
+	cpuLim := calculateCPULimit(rps, c.ResourceAdvisor.CPULimitFactor)
+	memReq := calculateMemoryRequest(rps, c.ResourceAdvisor.MemRequestFactor)
+	memLim := calculateMemoryLimit(rps, c.ResourceAdvisor.MemLimitFactor)
 
 	rec := AdviceRecord{
 		Namespace:     ns,
 		Service:       es,
 		WeightedRPS:   rps,
 		P95LatencyMs:  lat,
-		CPURequest:    cpuRequestBase,
-		CPULimit:      cpuLimitBase,
-		MemRequest:    memRequestBase,
-		MemLimit:      memLimitBase,
+		CPURequest:    cpuReq,
+		CPULimit:      cpuLim,
+		MemRequest:    memReq,
+		MemLimit:      memLim,
 		MinReplicas:   replicaMin,
 		MetricsWindow: "1d",
 		GeneratedAt:   time.Now().Format(time.RFC3339),
 	}
 
-	// 决策逻辑（日级）
+	// 改进的决策逻辑
+	rec.Decision, rec.RecommendedReplicas, rec.Risk, rec.Confidence, rec.Reason = 
+		makeDecision(rps, lat, c.ResourceAdvisor.PodRedundancyFactor)
+
+	return rec, nil
+}
+
+func calculateCPURequest(rps float64, factor float64) int {
+	base := 100.0 // 基础CPU需求
+	if factor == 0 {
+		factor = 1.0
+	}
+	return int(math.Ceil(base + rps*0.1*factor))
+}
+
+func calculateCPULimit(rps float64, factor float64) int {
+	if factor == 0 {
+		factor = 2.0
+	}
+	return int(math.Ceil(float64(calculateCPURequest(rps, 1.0)) * factor))
+}
+
+func calculateMemoryRequest(rps float64, factor float64) int {
+	base := 128.0 // 基础内存需求
+	if factor == 0 {
+		factor = 1.0
+	}
+	return int(math.Ceil(base + rps*2*factor))
+}
+
+func calculateMemoryLimit(rps float64, factor float64) int {
+	if factor == 0 {
+		factor = 2.0
+	}
+	return int(math.Ceil(float64(calculateMemoryRequest(rps, 1.0)) * factor))
+}
+
+func makeDecision(rps, latency, redundancyFactor float64) (decision string, replicas int, risk, confidence, reason string) {
+	if redundancyFactor == 0 {
+		redundancyFactor = 1.5
+	}
+
 	switch {
 	case rps == 0:
-		rec.Decision = "NO_TRAFFIC"
-		rec.RecommendedReplicas = replicaMin
-		rec.Risk = "LOW"
-		rec.Confidence = "HIGH"
-		rec.Reason = "连续24小时未观测到业务流量"
-
-	case rps > 50 || lat > 500:
-		rec.Decision = "SCALE_OUT"
-		rec.RecommendedReplicas = int(math.Ceil(rps / 20.0 * 1.5))
-		rec.Risk = "MEDIUM"
-		rec.Confidence = "HIGH"
-		rec.Reason = "日峰值RPS或P95延迟偏高"
-
+		return "NO_TRAFFIC", replicaMin, "LOW", "HIGH", "连续24小时未观测到业务流量"
+	
+	case latency > 1000 || rps > 200:
+		replicas = int(math.Ceil(rps / 15.0 * redundancyFactor))
+		return "SCALE_OUT", replicas, "HIGH", "HIGH", "高负载或高延迟，需要扩容"
+	
+	case latency > 500 || rps > 100:
+		replicas = int(math.Ceil(rps / 20.0 * redundancyFactor))
+		return "SCALE_OUT", replicas, "MEDIUM", "HIGH", "负载较高，建议扩容"
+	
+	case rps < 10 && latency < 100:
+		replicas = int(math.Ceil(float64(replicaMin) * 0.8))
+		if replicas < 1 {
+			replicas = 1
+		}
+		return "DOWNSIZE_SAFE", replicas, "LOW", "MEDIUM", "低负载，可安全缩容"
+	
 	default:
-		rec.Decision = "KEEP"
-		rec.RecommendedReplicas = replicaMin
-		rec.Risk = "LOW"
-		rec.Confidence = "MEDIUM"
-		rec.Reason = "日级指标稳定，资源利用合理"
+		replicas = int(math.Ceil(rps / 25.0 * redundancyFactor))
+		if replicas < replicaMin {
+			replicas = replicaMin
+		}
+		return "KEEP", replicas, "LOW", "HIGH", "指标稳定，保持当前配置"
 	}
-
-	if rec.RecommendedReplicas < replicaMin {
-		rec.RecommendedReplicas = replicaMin
-	}
-
-	return rec
 }
 
 /*
@@ -209,55 +303,46 @@ Prometheus 查询
 =====================
 */
 
-func queryDailyWeightedRPS(promAddr, es string) float64 {
-	query := fmt.Sprintf(`
-avg_over_time(
-  sum by(method)(
-    rate(
-      traefik_service_requests_total{
-        namespace="traefik",
-        exported_service="%s"
-      }[5m]
-    )
-  )[1d]
-)
-`, es)
+func queryDailyWeightedRPS(promAddr, es string) (float64, error) {
+	query := fmt.Sprintf(`avg_over_time(sum by(method)(rate(traefik_service_requests_total{namespace="traefik",exported_service="%s"}[5m]))[1d:1h])`, es)
 
-	result := queryProm(promAddr, query)
+	result, err := queryProm(promAddr, query)
+	if err != nil {
+		return 0, fmt.Errorf("查询失败: %w", err)
+	}
 
 	var total float64
 	for _, r := range result {
-		v, _ := strconv.ParseFloat(r.Value, 64)
+		v, err := strconv.ParseFloat(r.Value, 64)
+		if err != nil {
+			return 0, fmt.Errorf("解析数值失败: %w", err)
+		}
 		w := methodWeights[r.Metric["method"]]
 		if w == 0 {
 			w = 1
 		}
 		total += v * w
 	}
-	return total
+	return total, nil
 }
 
-func queryDailyP95Latency(promAddr, es string) float64 {
-	query := fmt.Sprintf(`
-histogram_quantile(
-  0.95,
-  sum by(le)(
-    rate(
-      traefik_service_request_duration_seconds_bucket{
-        namespace="traefik",
-        exported_service="%s"
-      }[5m]
-    )
-  )
-) * 1000
-`, es)
+func queryDailyP95Latency(promAddr, es string) (float64, error) {
+	// 先查询当前 P95 延迟
+	query := fmt.Sprintf(`histogram_quantile(0.95,sum by(le)(rate(traefik_service_request_duration_seconds_bucket{namespace="traefik",exported_service="%s"}[5m]))) * 1000`, es)
 
-	result := queryProm(promAddr, query)
-	if len(result) == 0 {
-		return 0
+	result, err := queryProm(promAddr, query)
+	if err != nil {
+		return 0, fmt.Errorf("查询失败: %w", err)
 	}
-	v, _ := strconv.ParseFloat(result[0].Value, 64)
-	return v
+	if len(result) == 0 {
+		return 0, nil // 没有数据是正常情况
+	}
+
+	v, err := strconv.ParseFloat(result[0].Value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("解析延迟数值失败: %w", err)
+	}
+	return v, nil
 }
 
 /*
@@ -271,21 +356,31 @@ type promResult struct {
 	Value  string
 }
 
-func queryProm(promAddr, q string) []promResult {
+func queryProm(promAddr, q string) ([]promResult, error) {
 	u := strings.TrimRight(promAddr, "/") + "/api/v1/query"
 	params := url.Values{}
 	params.Set("query", q)
 
-	resp, err := http.Get(u + "?" + params.Encode())
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(u + "?" + params.Encode())
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Prometheus返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应体失败: %w", err)
+	}
 
 	var res struct {
-		Data struct {
+		Status string `json:"status"`
+		Data   struct {
 			Result []struct {
 				Metric map[string]string `json:"metric"`
 				Value  []interface{}     `json:"value"`
@@ -294,17 +389,26 @@ func queryProm(promAddr, q string) []promResult {
 	}
 
 	if err := json.Unmarshal(body, &res); err != nil {
-		return nil
+		return nil, fmt.Errorf("解析JSON失败: %w", err)
+	}
+
+	if res.Status != "success" {
+		return nil, fmt.Errorf("Prometheus查询失败: %s", res.Status)
 	}
 
 	var out []promResult
 	for _, r := range res.Data.Result {
-		out = append(out, promResult{
-			Metric: r.Metric,
-			Value:  r.Value[1].(string),
-		})
+		if len(r.Value) < 2 {
+			continue
+		}
+		if valueStr, ok := r.Value[1].(string); ok {
+			out = append(out, promResult{
+				Metric: r.Metric,
+				Value:  valueStr,
+			})
+		}
 	}
-	return out
+	return out, nil
 }
 
 /*
@@ -313,24 +417,38 @@ exported_service 发现
 =====================
 */
 
-func getExportedServices(promAddr string) []string {
+func getExportedServices(promAddr string) ([]string, error) {
 	u := strings.TrimRight(promAddr, "/") + "/api/v1/label/exported_service/values"
 
-	resp, err := http.Get(u)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(u)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Prometheus返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应体失败: %w", err)
+	}
 
 	var res struct {
-		Data []string `json:"data"`
+		Status string   `json:"status"`
+		Data   []string `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &res); err != nil {
-		return nil
+		return nil, fmt.Errorf("解析JSON失败: %w", err)
 	}
 
-	return res.Data
+	if res.Status != "success" {
+		return nil, fmt.Errorf("Prometheus标签查询失败: %s", res.Status)
+	}
+
+	return res.Data, nil
 }

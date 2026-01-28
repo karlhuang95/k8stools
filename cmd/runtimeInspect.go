@@ -20,7 +20,9 @@ var runtimeInspectCmd = &cobra.Command{
 		if err != nil {
 			fmt.Println(err)
 		}
-		runtimeInspect.GetRuntimeInspect(c)
+		if err := runtimeInspect.GetRuntimeInspect(c); err != nil {
+			fmt.Printf("❌ 运行时检查失败: %v\n", err)
+		}
 	},
 }
 

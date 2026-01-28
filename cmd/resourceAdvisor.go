@@ -20,7 +20,9 @@ var resourceAdvisorCmd = &cobra.Command{
 		if err != nil {
 			fmt.Println(err)
 		}
-		resourceAdvisor.ResourceAdvisor(c)
+		if err := resourceAdvisor.ResourceAdvisor(c); err != nil {
+			fmt.Printf("❌ 资源顾问分析失败: %v\n", err)
+		}
 	},
 }
 

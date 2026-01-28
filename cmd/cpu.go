@@ -20,7 +20,7 @@ var cpuCmd = &cobra.Command{
 		if err != nil {
 			fmt.Println(err)
 		}
-		cpu.GetDeyloymentCpu(c)
+		cpu.GetDeploymentCpu(c)
 	},
 }
 

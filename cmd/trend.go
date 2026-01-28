@@ -20,7 +20,9 @@ var trendCmd = &cobra.Command{
 		if err != nil {
 			fmt.Println(err)
 		}
-		trend.GetTrend(c)
+		if err := trend.GetTrend(c); err != nil {
+			fmt.Printf("❌ 趋势分析失败: %v\n", err)
+		}
 	},
 }
 
