@@ -172,9 +172,9 @@ Memory Limit = ceil(Memory Req × 系数)
 kubeconfig: /root/.kube/config
 
 namespace:
-  - zhike-prod
+  - {namespace}-prod
 
-prometheus: https://prom.zhikecn.com/
+prometheus: https://prometheus.demo.com/
 
 # 成本估算配置
 cost:
