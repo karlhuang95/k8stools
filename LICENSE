@@ -1,0 +1,28 @@
+GNU GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+Copyright (C) 2025 k8stools contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+The full text of the GNU General Public License v3 follows:
+https://www.gnu.org/licenses/gpl-3.0.txt
+
+Summary of key terms:
+- You are free to use, study, modify, and distribute this software
+- Any derivative works must also be released under GPLv3
+- You must provide source code when distributing the software
+- Commercial use is permitted but derivative works must be open source
+- If you modify the code, you must indicate your changes
+- This license includes patent protection for users
